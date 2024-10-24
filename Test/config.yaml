@@ -1,0 +1,41 @@
+receivers:
+  otlp:
+    # https://github.com/open-telemetry/opentelemetry-collector/tree/main/receiver/otlpreceiver
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    # https://github.com/open-telemetry/opentelemetry-collector/tree/main/processor/batchprocessor
+  resourcedetection:
+    # Enriches telemetry data with resource information from the host
+    # https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/processor/resourcedetectionprocessor
+    detectors: ["env", "system"]
+    override: false
+  deltatocumulative:
+    # how long until a series not receiving new samples is removed
+    max_stale: 1m
+
+exporters:
+  debug:
+    verbosity: detailed
+
+service:
+  extensions: []
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [resourcedetection, batch]
+      exporters: [debug]
+    metrics:
+      receivers: [otlp]
+      processors: [resourcedetection, batch, deltatocumulative]
+      exporters: [debug]
+    logs:
+      receivers: [otlp]
+      processors: [resourcedetection, batch]
+      exporters: [debug]
+  

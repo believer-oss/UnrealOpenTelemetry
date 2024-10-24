@@ -1,0 +1,30 @@
+{
+	"FileVersion": 1,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "OpenTelemetry",
+	"Description": "OpenTelemetry integration for Unreal.",
+	"Category": "",
+	"CreatedBy": "Believer Co",
+	"CreatedByURL": "",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"EnabledByDefault": true,
+	"CanContainContent": false,
+	"IsBetaVersion": false,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "OpenTelemetry",
+			"Type": "Runtime",
+			"LoadingPhase": "PreDefault"
+		},
+		{
+			"Name": "OpenTelemetryEditor",
+			"Type": "Editor",
+			"LoadingPhase": "PreDefault"
+		}
+	]
+}
