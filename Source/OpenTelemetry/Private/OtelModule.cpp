@@ -33,9 +33,8 @@
 #include "opentelemetry/sdk/metrics/view/meter_selector_factory.h"
 #include "opentelemetry/sdk/metrics/view/view_factory.h"
 #include "opentelemetry/sdk/metrics/view/view_registry_factory.h"
+#include "opentelemetry/sdk/resource/resource_detector.h"
 #include "opentelemetry/sdk/trace/batch_span_processor_factory.h"
-#include "opentelemetry/sdk/trace/exporter.h"
-#include "opentelemetry/sdk/trace/processor.h"
 #include "opentelemetry/sdk/trace/tracer_provider_factory.h"
 #include "opentelemetry/trace/provider.h"
 #include "opentelemetry/trace/semantic_conventions.h"
@@ -44,7 +43,6 @@
 #undef GetEnvironmentVariable // Seems like windows.h is getting dragged in by some otel headers :(
 #endif
 
-#include <sstream>
 #include <iostream>
 
 DEFINE_LOG_CATEGORY_STATIC(LogOtel, Log, All);
@@ -267,7 +265,7 @@ FString FOtelSpan::TraceId() const
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // FOtelScopedSpan and FOtelScopedSpanImpl
 
-struct FOtelScopedSpanImpl
+struct FOtelScopedSpanImpl : public FNoncopyable
 {
 	FOtelScopedSpanImpl(const FOtelSpan& InSpan);
 
@@ -285,24 +283,50 @@ FOtelScopedSpan::FOtelScopedSpan(const FOtelSpan& Span)
 {
 	if (Span.OtelSpan)
 	{
-		FOtelModule& Module = FOtelModule::Get();
-		FOtelLockedData<FOtelModule::FTracerToScopeStack> TracerToScopeStack = Module.LockedTracerToScopeStack.Lock();
-		TArray<TSharedPtr<FOtelScopedSpanImpl>>* ScopesPtr = TracerToScopeStack->Find(Span.TracerName);
-		if (ScopesPtr)
+		if (FOtelModule* Module = FOtelModule::TryGet())
 		{
-			TArray<TSharedPtr<FOtelScopedSpanImpl>>& Scopes = *ScopesPtr;
-			for (int32 i = Scopes.Num() - 1; i >= 0; --i)
+			FOtelLockedData<FOtelModule::FTracerToScopeStack> TracerToScopeStack = Module->LockedTracerToScopeStack.Lock();
+			TArray<TSharedPtr<FOtelScopedSpanImpl>>* ScopesPtr = TracerToScopeStack->Find(Span.TracerName);
+			if (ScopesPtr)
 			{
-				check(Scopes[i]);
-				if (Span.OtelSpan == Scopes[i]->Span.OtelSpan)
+				TArray<TSharedPtr<FOtelScopedSpanImpl>>& Scopes = *ScopesPtr;
+				for (int32 i = Scopes.Num() - 1; i >= 0; --i)
 				{
-					Scope = Scopes[i];
-					++Scope->RefCount;
-					return;
+					check(Scopes[i]);
+					if (Span.OtelSpan == Scopes[i]->Span.OtelSpan)
+					{
+						Scope = Scopes[i];
+						++Scope->RefCount;
+						return;
+					}
 				}
 			}
 		}
 	}
+}
+
+FOtelScopedSpan::FOtelScopedSpan(const FOtelScopedSpan& ScopedSpan)
+{
+	Scope = ScopedSpan.Scope;
+	if (Scope && Scope->Span.OtelSpan)
+	{
+		++Scope->RefCount;
+	}
+}
+
+FOtelScopedSpan& FOtelScopedSpan::operator=(const FOtelScopedSpan& ScopedSpan)
+{
+	Scope = ScopedSpan.Scope;
+	if (Scope && Scope->Span.OtelSpan)
+	{
+		++Scope->RefCount;
+	}
+	return *this;
+}
+
+FOtelScopedSpan::FOtelScopedSpan(FOtelScopedSpan&& ScopedSpan)
+{
+	Scope = MoveTemp(ScopedSpan.Scope);
 }
 
 FOtelScopedSpan::~FOtelScopedSpan()
@@ -313,30 +337,32 @@ FOtelScopedSpan::~FOtelScopedSpan()
 		if (Scope->RefCount <= 0)
 		{
 			// Destroy scoped span
-			FOtelModule& Module = FOtelModule::Get();
-			FOtelLockedData<FOtelModule::FTracerToScopeStack> TracerToScopeStack = Module.LockedTracerToScopeStack.Lock();
-			TArray<TSharedPtr<FOtelScopedSpanImpl>>* ScopesPtr = TracerToScopeStack->Find(Scope->Span.TracerName);
-			if (ensure(ScopesPtr))
+			if (FOtelModule* Module = FOtelModule::TryGet())
 			{
-				TArray<TSharedPtr<FOtelScopedSpanImpl>>& Scopes = *ScopesPtr;
-				const int32 Index = Scopes.IndexOfByPredicate([this](const TSharedPtr<FOtelScopedSpanImpl>& Impl)
-					{
-						return Impl == Scope;
-					});
-
-				// End this and all child Scopes
-				if (Index != INDEX_NONE)
+				FOtelLockedData<FOtelModule::FTracerToScopeStack> TracerToScopeStack = Module->LockedTracerToScopeStack.Lock();
+				TArray<TSharedPtr<FOtelScopedSpanImpl>>* ScopesPtr = TracerToScopeStack->Find(Scope->Span.TracerName);
+				if (ensure(ScopesPtr))
 				{
-					for (int i = Scopes.Num() - 1; i >= Index; --i)
-					{
-						TSharedPtr<FOtelScopedSpanImpl>& Impl = Scopes[i];
-						check(Impl);
-						if (ensure(Impl->Span.OtelSpan))
+					TArray<TSharedPtr<FOtelScopedSpanImpl>>& Scopes = *ScopesPtr;
+					const int32 Index = Scopes.IndexOfByPredicate([this](const TSharedPtr<FOtelScopedSpanImpl>& Impl)
 						{
-							Impl->Span.OtelSpan->End();
+							return Impl == Scope;
+						});
+
+					// End this and all child Scopes
+					if (Index != INDEX_NONE)
+					{
+						for (int i = Scopes.Num() - 1; i >= Index; --i)
+						{
+							TSharedPtr<FOtelScopedSpanImpl>& Impl = Scopes[i];
+							check(Impl);
+							if (ensure(Impl->Span.OtelSpan))
+							{
+								Impl->Span.OtelSpan->End();
+							}
 						}
+						Scopes.SetNum(Index);
 					}
-					Scopes.SetNum(Index);
 				}
 			}
 		}
@@ -390,6 +416,9 @@ FOtelSpan FOtelTracer::StartSpanOpts(const TCHAR* SpanName, const TCHAR* File, i
 		auto SpanNameAnsi = StringCast<ANSICHAR>(SpanName);
 		auto OtelSpan = OtelTracer->StartSpan(SpanNameAnsi.Get(), AttributeConverter, StartOptions);
 		auto Span = FOtelSpan(TracerName, OtelSpan);
+#if WITH_EDITOR
+		Span.SpanName = SpanName;
+#endif
 		return Span;
 	}
 
@@ -709,6 +738,7 @@ TSharedPtr<FOtelGauge> FOtelMeter::CreateGauge(EOtelInstrumentType MeterType, co
 
 TSharedPtr<FOtelHistogram> FOtelMeter::CreateHistogram(EOtelInstrumentType MeterType, const TCHAR* HistogramName, FOtelHistogramBuckets Buckets, EUnit UnitType)
 {
+#if !PLATFORM_APPLE
 	check(HistogramName);
 	auto HistogramNameAnsi = StringCast<ANSICHAR>(HistogramName);
 
@@ -780,6 +810,9 @@ TSharedPtr<FOtelHistogram> FOtelMeter::CreateHistogram(EOtelInstrumentType Meter
 	}
 
 	return Histogram;
+#else
+	return nullptr;
+#endif
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1000,7 +1033,7 @@ bool FOtelOutputDevice::CanBeUsedOnMultipleThreads() const
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // FOtelModule
 
-IMPLEMENT_MODULE(FOtelModule, Otel);
+IMPLEMENT_MODULE(FOtelModule, OpenTelemetry);
 
 void FOtelModule::StartupModule()
 {
@@ -1048,6 +1081,10 @@ void FOtelModule::StartupModule()
 
 	otel::sdk::resource::ResourceAttributes SharedResAttributes;
 	{
+		opentelemetry::sdk::resource::OTELResourceDetector Detector;
+		opentelemetry::sdk::resource::Resource OTELResource = Detector.Detect();
+		SharedResAttributes = OTELResource.GetAttributes();
+
 		this->SessionId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower);
 		FString EngineVersion = FEngineVersion::Current().ToString();
 
@@ -1172,6 +1209,23 @@ void FOtelModule::ShutdownModule()
 	const double FlushTimeoutSeconds = 1.5;
 	ForceFlush(FlushTimeoutSeconds);
 
+	FOtelLockedData<FOtelModule::FTracerToScopeStack> TracerToScopeStack = LockedTracerToScopeStack.Lock();
+	for (TPair<FName, TArray<TSharedPtr<FOtelScopedSpanImpl>>>& Pair : *TracerToScopeStack)
+	{
+		for (int32 i = Pair.Value.Num() - 1; i >= 0; --i)
+		{
+			if (Pair.Value[i])
+			{
+				FOtelSpan& Span = Pair.Value[i]->Span;
+				if (Span.OtelSpan)
+				{
+					Span.OtelSpan->End();
+				}
+			}
+		}
+	}
+	TracerToScopeStack->Reset();
+
 	std::shared_ptr<otel::trace::TracerProvider> TracerProviderNone;
 	otel::trace::Provider::SetTracerProvider(TracerProviderNone);
 
@@ -1194,6 +1248,11 @@ void FOtelModule::ShutdownModule()
 FOtelModule& FOtelModule::Get()
 {
 	return FModuleManager::Get().LoadModuleChecked<FOtelModule>("OpenTelemetry");
+}
+
+FOtelModule* FOtelModule::TryGet()
+{
+	return FModuleManager::Get().GetModulePtr<FOtelModule>("OpenTelemetry");
 }
 
 void FOtelModule::SetEnableEventsForLogChannel(const FLogCategoryBase* LogCategory, FName TracerName, ELogVerbosity::Type LogVerbosity)
@@ -1248,6 +1307,7 @@ FOtelScopedSpan FOtelModule::Unpin(uint64 SpanId)
 
 void FOtelModule::EmitLog(const TCHAR* Message, TArrayView<const FAnalyticsEventAttribute> Attributes, const TCHAR* File, int32 LineNumber, FName TracerName, TOptional<EOtelStatus> Status)
 {
+#if !PLATFORM_APPLE
 	check(Message);
 
 	otel::trace::SpanId SpanId;
@@ -1302,16 +1362,19 @@ void FOtelModule::EmitLog(const TCHAR* Message, TArrayView<const FAnalyticsEvent
 
 		Logger->EmitLogRecord(MoveTemp(Record));
 	}
+#endif
 }
 
 FOtelMeter FOtelModule::GetMeter(const TCHAR* MeterName)
 {
 	otel::nostd::shared_ptr<otel::metrics::Meter> OtelMeter;
+#if !PLATFORM_APPLE
 	if (MeterProvider)
 	{
 		auto FinalMeterNameAnsi = StringCast<ANSICHAR>((MeterName == nullptr) ? *Config.Metric.DefaultMeterName : MeterName);
 		OtelMeter = MeterProvider->GetMeter(FinalMeterNameAnsi.Get());
 	}
+#endif
 
 	return FOtelMeter(MeterName, *this, OtelMeter);
 }

@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "Modules/ModuleInterface.h"
 #include "AnalyticsEventAttribute.h"
 #include "HAL/CriticalSection.h"
 #include "Math/UnitConversion.h"
@@ -132,13 +133,21 @@ struct OPENTELEMETRY_API FOtelSpan
 
 	FName TracerName;
 	std::shared_ptr<otel::trace::Span> OtelSpan;
+
+#if WITH_EDITOR
+	FString SpanName;
+#endif
 };
 
 struct OPENTELEMETRY_API FOtelScopedSpan
 {
 	FOtelScopedSpan() = default;
 	FOtelScopedSpan(const FOtelSpan& Span);
+	FOtelScopedSpan(const FOtelScopedSpan& ScopedSpan);
+	FOtelScopedSpan(FOtelScopedSpan&& ScopedSpan);
 	~FOtelScopedSpan();
+
+	FOtelScopedSpan& operator=(const FOtelScopedSpan& Span);
 
 	FOtelSpan Inner() const;
 
@@ -292,6 +301,7 @@ public:
 	// FOtelModule interface
 
 	static FOtelModule& Get();
+	static FOtelModule* TryGet();
 
 	// Unreal log -> span event routing
 	void SetEnableEventsForLogChannel(const FLogCategoryBase* LogCategory, FName TracerName, ELogVerbosity::Type LogVerbosity = ELogVerbosity::NoLogging);

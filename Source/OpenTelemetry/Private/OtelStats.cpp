@@ -101,8 +101,26 @@ void FOtelStats::Tick(float DeltaTime)
 		}
 	}
 
+	uint32 EngineGameThreadCycles = 0.0f;
+	if ((GIsEditor == false) && GIsServer)
+	{
+		// Logic ripped from FViewport::Draw which is never called in a dedicated server
+		static uint32 LastTimestamp = 0;
+		const uint32 CurrentTime = FPlatformTime::Cycles();
+		FThreadIdleStats& GameThread = FThreadIdleStats::Get();
+		const uint32 ThreadTime = CurrentTime - LastTimestamp;
+
+		EngineGameThreadCycles = (ThreadTime > GameThread.Waits) ? (ThreadTime - GameThread.Waits) : ThreadTime;
+		LastTimestamp = CurrentTime;
+		GameThread.Reset();
+	}
+	else
+	{
+		EngineGameThreadCycles = GGameThreadTime;
+	}
+
 	// determine and record frame stats
-	const float GameThreadMs = FPlatformTime::ToMilliseconds(GGameThreadTime);
+	const float GameThreadMs = FPlatformTime::ToMilliseconds(EngineGameThreadCycles);
 	const float RenderThreadMs = FPlatformTime::ToMilliseconds(GRenderThreadTime);
 	const float RhiThreadMs = FPlatformTime::ToMilliseconds(GRHIThreadTime);
 	const float GpuMs = FPlatformTime::ToMilliseconds(GGPUFrameTime);

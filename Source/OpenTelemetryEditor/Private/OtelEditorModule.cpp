@@ -291,7 +291,7 @@ struct FOtelEditorAnalytics
 
 static TUniquePtr<FOtelEditorAnalytics> GEditorAnalyticsPtr;
 
-class OtelEditorModule final : public IModuleInterface, private FNoncopyable
+class FOtelEditorModule final : public IModuleInterface, private FNoncopyable
 {
 	virtual void StartupModule() override;
 	virtual void ShutdownModule() override;
@@ -299,14 +299,14 @@ class OtelEditorModule final : public IModuleInterface, private FNoncopyable
 	FOtelEditorAnalytics EditorAnalytics;
 };
 
-void OtelEditorModule::StartupModule()
+void FOtelEditorModule::StartupModule()
 {
 	EditorAnalytics.OnModuleStartup();
 }
 
-void OtelEditorModule::ShutdownModule()
+void FOtelEditorModule::ShutdownModule()
 {
 	EditorAnalytics.OnModuleShutdown();
 }
 
-IMPLEMENT_MODULE(OtelEditorModule, OtelEditor)
+IMPLEMENT_MODULE(FOtelEditorModule, OpenTelemetryEditor)
